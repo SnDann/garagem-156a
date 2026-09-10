@@ -67,9 +67,9 @@ export default function Login({ onLogin, globalStyle }) {
         </div>
         <p className="text-xs text-center mt-auto pt-10" style={{ color: '#d4d2d7' }}>156A · colecionar é contar histórias</p>
       </section>
-      <section className="hidden md:block absolute inset-y-0 right-0 w-1/2 overflow-hidden" style={{ background: '#0d1826' }}>
-        <img src={LOGIN_BACKGROUND} alt="Coleção Garagem 156A" className="w-full h-full object-cover" style={{ objectPosition: 'center', opacity: 0.78 }} />
-        <div className="absolute inset-0" style={{ background: 'linear-gradient(90deg, #050608 0%, rgba(5,6,8,.32) 28%, rgba(5,6,8,.08) 100%)' }} />
+      <section className="hidden md:block absolute inset-y-0 right-0 w-1/2 overflow-hidden" style={{ background: 'linear-gradient(145deg, #eef0ed 0%, #cbd3d4 58%, #8b9aa5 100%)' }}>
+        <img src={LOGIN_BACKGROUND} alt="Coleção Garagem 156A" className="w-full h-full object-contain" style={{ objectPosition: 'center', opacity: 1, filter: 'drop-shadow(0 18px 22px rgba(5,6,8,.28))' }} />
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(90deg, rgba(5,6,8,.68) 0%, rgba(5,6,8,.18) 25%, rgba(5,6,8,0) 58%)' }} />
       </section>
     </div>
   );
