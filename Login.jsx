@@ -91,7 +91,7 @@ export default function Login({ onLogin, globalStyle }) {
             className="text-4xl sm:text-5xl font-semibold tracking-tight mb-12"
             style={{ color: '#f1f0f3' }}
           >
-            Faça seu login<span style={{ color: '#c879c8' }}>.</span>
+            Pequenos detalhes, grandes paixões<span style={{ color: '#c879c8' }}>.</span>
           </h1>
 
           {/* Formulário */}
