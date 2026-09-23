@@ -4,16 +4,28 @@ import { Eye, EyeOff } from 'lucide-react';
 const LOGO_DATA_URI = '/logo-garagem-156a.png';
 const LOGIN_BACKGROUND = '/garagem-156a-login.png';
 
-export default function Login({ onLogin, globalStyle }) {
+export default function Login({ onLogin, onRegister, onRecover, authProvider = 'local', globalStyle }) {
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
+  const [confirmarSenha, setConfirmarSenha] = useState('');
   const [erro, setErro] = useState('');
+  const [mensagem, setMensagem] = useState('');
   const [mostrarSenha, setMostrarSenha] = useState(false);
   const [carregando, setCarregando] = useState(false);
+  const [modo, setModo] = useState('login');
 
   // Limpa a mensagem de erro ao digitar
   function limparErro() {
     if (erro) setErro('');
+    if (mensagem) setMensagem('');
+  }
+
+  function trocarModo(proximoModo) {
+    setModo(proximoModo);
+    setErro('');
+    setMensagem('');
+    setSenha('');
+    setConfirmarSenha('');
   }
 
   async function handleSubmit(event) {
@@ -22,26 +34,38 @@ export default function Login({ onLogin, globalStyle }) {
     const emailLimpo = email.trim();
 
     // Validações
-    if (!emailLimpo || !senha) {
-      setErro('Informe seu e-mail e sua senha para entrar.');
+    if (!emailLimpo || (modo !== 'recover' && !senha)) {
+      setErro(modo === 'recover' ? 'Informe seu e-mail.' : 'Informe seu e-mail e sua senha.');
       return;
     }
     if (!/^\S+@\S+\.\S+$/.test(emailLimpo)) {
       setErro('Digite um e-mail válido.');
       return;
     }
-    if (senha.length < 6) {
+    if (modo !== 'recover' && senha.length < 6) {
       setErro('A senha deve ter pelo menos 6 caracteres.');
+      return;
+    }
+    if (modo === 'register' && senha !== confirmarSenha) {
+      setErro('As senhas não conferem.');
       return;
     }
 
     setErro('');
+    setMensagem('');
     setCarregando(true);
 
     try {
-      await onLogin(emailLimpo, senha);
+      if (modo === 'register') {
+        await onRegister(emailLimpo, senha);
+      } else if (modo === 'recover') {
+        const resposta = await onRecover(emailLimpo);
+        setMensagem(resposta || 'Verifique as instruções para recuperar o acesso.');
+      } else {
+        await onLogin(emailLimpo, senha);
+      }
     } catch (err) {
-      setErro(err?.message || 'Não foi possível entrar. Tente novamente.');
+      setErro(err?.message || 'Não foi possível concluir a ação. Tente novamente.');
     } finally {
       setCarregando(false);
     }
@@ -85,13 +109,13 @@ export default function Login({ onLogin, globalStyle }) {
             className="text-xs uppercase tracking-[0.3em] mb-3"
             style={{ color: '#a45bb5' }}
           >
-            Garagem 156A
+            Garagem 156A · {authProvider}
           </p>
           <h1
             className="text-4xl sm:text-5xl font-semibold tracking-tight mb-12"
             style={{ color: '#f1f0f3' }}
           >
-            Pequenos detalhes, grandes paixões<span style={{ color: '#c879c8' }}>.</span>
+            {modo === 'register' ? 'Crie sua garagem digital' : modo === 'recover' ? 'Recupere seu acesso' : 'Pequenos detalhes, grandes paixões'}<span style={{ color: '#c879c8' }}>.</span>
           </h1>
 
           {/* Formulário */}
@@ -124,52 +148,85 @@ export default function Login({ onLogin, globalStyle }) {
               </div>
             </label>
 
-            {/* Senha */}
-            <label className="block">
-              <span className="block text-sm mb-3" style={{ color: '#d1d0d5' }}>
-                Senha
-              </span>
-              <div
-                className="relative p-px rounded-xl"
-                style={{
-                  background:
-                    'linear-gradient(110deg, #385dff, #a244c0 52%, #f4b72f)',
-                }}
-              >
-                <input
-                  type={mostrarSenha ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  placeholder="••••••••"
-                  value={senha}
-                  onChange={(event) => {
-                    setSenha(event.target.value);
-                    limparErro();
+            {modo !== 'recover' && (
+              <label className="block">
+                <span className="block text-sm mb-3" style={{ color: '#d1d0d5' }}>
+                  Senha
+                </span>
+                <div
+                  className="relative p-px rounded-xl"
+                  style={{
+                    background:
+                      'linear-gradient(110deg, #385dff, #a244c0 52%, #f4b72f)',
                   }}
-                  disabled={carregando}
-                  className="w-full rounded-[11px] px-4 py-4 pr-12 text-sm outline-none disabled:opacity-60"
-                  style={{ background: '#111214', color: '#f3f2f5' }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setMostrarSenha((value) => !value)}
-                  aria-label={mostrarSenha ? 'Ocultar senha' : 'Mostrar senha'}
-                  aria-pressed={mostrarSenha}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer"
-                  style={{ color: '#8b8d98' }}
                 >
-                  {mostrarSenha ? <EyeOff size={17} /> : <Eye size={17} />}
-                </button>
-              </div>
-            </label>
+                  <input
+                    type={mostrarSenha ? 'text' : 'password'}
+                    autoComplete={modo === 'register' ? 'new-password' : 'current-password'}
+                    placeholder="••••••••"
+                    value={senha}
+                    onChange={(event) => {
+                      setSenha(event.target.value);
+                      limparErro();
+                    }}
+                    disabled={carregando}
+                    className="w-full rounded-[11px] px-4 py-4 pr-12 text-sm outline-none disabled:opacity-60"
+                    style={{ background: '#111214', color: '#f3f2f5' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setMostrarSenha((value) => !value)}
+                    aria-label={mostrarSenha ? 'Ocultar senha' : 'Mostrar senha'}
+                    aria-pressed={mostrarSenha}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer"
+                    style={{ color: '#8b8d98' }}
+                  >
+                    {mostrarSenha ? <EyeOff size={17} /> : <Eye size={17} />}
+                  </button>
+                </div>
+              </label>
+            )}
+
+            {modo === 'register' && (
+              <label className="block">
+                <span className="block text-sm mb-3" style={{ color: '#d1d0d5' }}>
+                  Confirmar senha
+                </span>
+                <div
+                  className="p-px rounded-xl"
+                  style={{
+                    background:
+                      'linear-gradient(110deg, #385dff, #a244c0 52%, #f4b72f)',
+                  }}
+                >
+                  <input
+                    type={mostrarSenha ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                    value={confirmarSenha}
+                    onChange={(event) => {
+                      setConfirmarSenha(event.target.value);
+                      limparErro();
+                    }}
+                    disabled={carregando}
+                    className="w-full rounded-[11px] px-4 py-4 text-sm outline-none disabled:opacity-60"
+                    style={{ background: '#111214', color: '#f3f2f5' }}
+                  />
+                </div>
+              </label>
+            )}
 
             {/* Esqueci minha senha */}
-            <button
-              type="button"
-              className="block text-sm underline underline-offset-2 cursor-pointer"
-              style={{ color: '#f0edf2' }}
-            >
-              Esqueci minha senha
-            </button>
+            {modo === 'login' && (
+              <button
+                type="button"
+                onClick={() => trocarModo('recover')}
+                className="block text-sm underline underline-offset-2 cursor-pointer"
+                style={{ color: '#f0edf2' }}
+              >
+                Esqueci minha senha
+              </button>
+            )}
 
             {/* Mensagem de erro */}
             {erro && (
@@ -180,6 +237,16 @@ export default function Login({ onLogin, globalStyle }) {
                 style={{ color: '#ec7777' }}
               >
                 {erro}
+              </p>
+            )}
+            {mensagem && (
+              <p
+                role="status"
+                aria-live="polite"
+                className="text-xs"
+                style={{ color: '#7dd8aa' }}
+              >
+                {mensagem}
               </p>
             )}
 
@@ -194,17 +261,18 @@ export default function Login({ onLogin, globalStyle }) {
                 color: '#f7edf4',
               }}
             >
-              {carregando ? 'Entrando...' : 'Entrar'}
+              {carregando ? 'Aguarde...' : modo === 'register' ? 'Criar conta' : modo === 'recover' ? 'Recuperar acesso' : 'Entrar'}
             </button>
           </form>
 
           {/* Criar conta */}
           <button
             type="button"
+            onClick={() => trocarModo(modo === 'login' ? 'register' : 'login')}
             className="block mx-auto mt-9 text-sm underline underline-offset-2 cursor-pointer"
             style={{ color: '#f0edf2' }}
           >
-            Ainda não tenho uma conta
+            {modo === 'login' ? 'Ainda não tenho uma conta' : 'Voltar para entrar'}
           </button>
         </div>
 

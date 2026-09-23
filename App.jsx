@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Plus, X, Pencil, Trash2, Check, Camera, ArrowUpRight, ArrowDownRight, Calculator, Package, Users, RotateCcw, LogOut } from 'lucide-react';
 import Login from './Login.jsx';
+import { isSupabaseConfigured, supabase } from './supabaseClient.js';
 
 const LOGO_DATA_URI = '/logo-garagem-156a.png';
 const ON_PINK = '#2B0F1A';
@@ -95,6 +96,83 @@ const EMPTY_PEDIDO_FORM = { tipo: 'Venda', peca: '', contraparte: '', valor: '',
 const EMPTY_GALERIA_FORM = { titulo: '', local: '', tema: 'F1' };
 
 const STORAGE_KEY = 'garagem-156a-state-v1';
+const USERS_KEY = 'garagem-156a-users-v1';
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_STORAGE_CHARS = 4_500_000;
+
+function appStateFromData(data) {
+  return {
+    catalogo: Array.isArray(data?.catalogo) ? data.catalogo : SEED_CATALOGO,
+    wishlist: Array.isArray(data?.wishlist) ? data.wishlist : SEED_WISHLIST,
+    checklists: Array.isArray(data?.checklists) ? data.checklists : SEED_CHECKLISTS,
+    pedidos: Array.isArray(data?.pedidos) ? data.pedidos : SEED_PEDIDOS,
+    clientes: Array.isArray(data?.clientes) ? data.clientes : SEED_CLIENTES,
+    galeria: normalizeGaleria(data?.galeria),
+    nextId: Number(data?.nextId) || 200,
+  };
+}
+
+function formatCurrency(value, decimals = 0) {
+  return Number(value || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+async function hashPassword(value) {
+  const data = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function loadUsers() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(USERS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUsers(users) {
+  window.localStorage.setItem(USERS_KEY, JSON.stringify(users));
+}
+
+function downloadJson(filename, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function resizeImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => {
+        const maxSide = 1600;
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+        const width = Math.max(1, Math.round(image.width * scale));
+        const height = Math.max(1, Math.round(image.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+        context.drawImage(image, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.78));
+      };
+      image.onerror = () => reject(new Error('Não foi possível ler essa imagem.'));
+      image.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error('Não foi possível carregar essa imagem.'));
+    reader.readAsDataURL(file);
+  });
+}
 
 function loadPersistedState() {
   if (typeof window === 'undefined') return null;
@@ -148,6 +226,7 @@ function StatusBadge({ status }) {
 export default function App() {
   const [savedState] = useState(loadPersistedState);
   const [entrou, setEntrou] = useState(() => savedState?.entrou ?? false);
+  const [usuario, setUsuario] = useState(() => savedState?.usuario ?? '');
   const [tab, setTab] = useState('catalogo');
   const [catalogo, setCatalogo] = useState(() => savedState?.catalogo ?? SEED_CATALOGO);
   const [wishlist, setWishlist] = useState(() => savedState?.wishlist ?? SEED_WISHLIST);
@@ -165,12 +244,47 @@ export default function App() {
   const [simPorTema, setSimPorTema] = useState({});
   const [novoAlvo, setNovoAlvo] = useState({});
   const [galeriaErro, setGaleriaErro] = useState('');
+  const [wishlistBusca, setWishlistBusca] = useState('');
+  const [pedidoBusca, setPedidoBusca] = useState('');
+  const [clienteBusca, setClienteBusca] = useState('');
+  const [galeriaBusca, setGaleriaBusca] = useState('');
+  const [appMensagem, setAppMensagem] = useState('');
+  const [confirmacao, setConfirmacao] = useState(null);
+  const [authCarregando, setAuthCarregando] = useState(isSupabaseConfigured);
+  const [syncStatus, setSyncStatus] = useState(isSupabaseConfigured ? 'Conectando ao Supabase...' : 'Modo local');
+  const [currentUserId, setCurrentUserId] = useState('');
+  const [remoteLoaded, setRemoteLoaded] = useState(!isSupabaseConfigured);
+  const importInputRef = useRef(null);
+
+  function applyAppState(data) {
+    const state = appStateFromData(data);
+    setCatalogo(state.catalogo);
+    setWishlist(state.wishlist);
+    setChecklists(state.checklists);
+    setPedidos(state.pedidos);
+    setClientes(state.clientes);
+    setGaleria(state.galeria);
+    setNextId(state.nextId);
+  }
+
+  function getCurrentAppData() {
+    return {
+      catalogo,
+      wishlist,
+      checklists,
+      pedidos,
+      clientes,
+      galeria,
+      nextId,
+    };
+  }
 
   useEffect(() => {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
         version: 1,
         entrou,
+        usuario,
         catalogo,
         wishlist,
         checklists,
@@ -182,7 +296,99 @@ export default function App() {
     } catch {
       // A aplicação continua funcionando mesmo se o navegador bloquear o armazenamento.
     }
-  }, [entrou, catalogo, wishlist, checklists, pedidos, clientes, galeria, nextId]);
+  }, [entrou, usuario, catalogo, wishlist, checklists, pedidos, clientes, galeria, nextId]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+
+    let active = true;
+
+    async function loadRemoteState(user) {
+      setSyncStatus('Carregando dados da nuvem...');
+      const { data, error } = await supabase
+        .from('garagem_states')
+        .select('data')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (!active) return;
+
+      if (error) {
+        setSyncStatus('Não foi possível carregar os dados da nuvem.');
+        setRemoteLoaded(true);
+        return;
+      }
+
+      if (data?.data) {
+        applyAppState(data.data);
+      } else {
+        await supabase.from('garagem_states').insert({
+          user_id: user.id,
+          data: getCurrentAppData(),
+        });
+      }
+
+      setCurrentUserId(user.id);
+      setUsuario(user.email || '');
+      setEntrou(true);
+      setRemoteLoaded(true);
+      setSyncStatus('Sincronizado com Supabase.');
+    }
+
+    async function initAuth() {
+      const { data } = await supabase.auth.getSession();
+      const user = data.session?.user;
+      if (user) {
+        await loadRemoteState(user);
+      } else if (active) {
+        setEntrou(false);
+        setUsuario('');
+        setCurrentUserId('');
+        setRemoteLoaded(false);
+        setSyncStatus('Supabase configurado.');
+      }
+      if (active) setAuthCarregando(false);
+    }
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
+      const user = session?.user;
+      if (event === 'SIGNED_OUT') {
+        setEntrou(false);
+        setUsuario('');
+        setCurrentUserId('');
+        setRemoteLoaded(false);
+        setSyncStatus('Sessão encerrada.');
+      } else if (user) {
+        loadRemoteState(user);
+      }
+    });
+
+    initAuth();
+
+    return () => {
+      active = false;
+      subscription.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !currentUserId || !remoteLoaded) return;
+
+    const timeout = window.setTimeout(async () => {
+      setSyncStatus('Salvando na nuvem...');
+      const { error } = await supabase
+        .from('garagem_states')
+        .upsert({
+          user_id: currentUserId,
+          data: getCurrentAppData(),
+          updated_at: new Date().toISOString(),
+        });
+
+      setSyncStatus(error ? 'Erro ao salvar na nuvem.' : 'Sincronizado com Supabase.');
+    }, 800);
+
+    return () => window.clearTimeout(timeout);
+  }, [currentUserId, remoteLoaded, catalogo, wishlist, checklists, pedidos, clientes, galeria, nextId]);
 
   const stats = useMemo(() => {
     const totalCompra = catalogo.reduce((s, i) => s + Number(i.valorCompra || 0), 0);
@@ -214,6 +420,26 @@ export default function App() {
       return matchTema && matchBusca;
     });
   }, [catalogo, busca, temaFiltro]);
+
+  const wishlistFiltrada = useMemo(() => {
+    const q = wishlistBusca.trim().toLowerCase();
+    return wishlist.filter(item => !q || `${item.marca} ${item.modelo} ${item.tema} ${item.prioridade}`.toLowerCase().includes(q));
+  }, [wishlist, wishlistBusca]);
+
+  const pedidosFiltrados = useMemo(() => {
+    const q = pedidoBusca.trim().toLowerCase();
+    return pedidos.filter(pedido => !q || `${pedido.tipo} ${pedido.peca} ${pedido.contraparte} ${pedido.status}`.toLowerCase().includes(q));
+  }, [pedidos, pedidoBusca]);
+
+  const clientesFiltrados = useMemo(() => {
+    const q = clienteBusca.trim().toLowerCase();
+    return clientes.filter(cliente => !q || `${cliente.nome} ${cliente.email} ${cliente.plano} ${cliente.status}`.toLowerCase().includes(q));
+  }, [clientes, clienteBusca]);
+
+  const galeriaFiltrada = useMemo(() => {
+    const q = galeriaBusca.trim().toLowerCase();
+    return galeria.filter(item => !q || `${item.titulo} ${item.local} ${item.tema || ''}`.toLowerCase().includes(q));
+  }, [galeria, galeriaBusca]);
 
   const projecao = useMemo(() => {
     const fator = Math.pow(1 + simPct / 100, simMeses / 12);
@@ -287,37 +513,63 @@ export default function App() {
     closeModal();
   }
 
-  function removeCatalogo(id) { setCatalogo(prev => prev.filter(i => i.id !== id)); }
-  function removeWishlist(id) { setWishlist(prev => prev.filter(i => i.id !== id)); }
-  function removeCliente(id) { setClientes(prev => prev.filter(c => c.id !== id)); }
-  function removePedido(id) { setPedidos(prev => prev.filter(p => p.id !== id)); }
-  function removeGaleria(id) { setGaleria(prev => prev.filter(item => item.id !== id)); }
-
-  function removeFotoGaleria(galeriaId, fotoId) {
-    setGaleria(prev => prev.map(item => item.id === galeriaId
-      ? { ...item, fotos: item.fotos.filter(foto => foto.id !== fotoId) }
-      : item));
+  function pedirConfirmacao(titulo, texto, onConfirm) {
+    setConfirmacao({ titulo, texto, onConfirm });
   }
 
-  function addFotoGaleria(galeriaId, file) {
+  function confirmarAcao() {
+    confirmacao?.onConfirm();
+    setConfirmacao(null);
+  }
+
+  function removeCatalogo(id) {
+    pedirConfirmacao('Excluir peça?', 'Essa peça será removida do catálogo.', () => setCatalogo(prev => prev.filter(i => i.id !== id)));
+  }
+  function removeWishlist(id) {
+    pedirConfirmacao('Excluir item?', 'Esse item será removido da wishlist.', () => setWishlist(prev => prev.filter(i => i.id !== id)));
+  }
+  function removeCliente(id) {
+    pedirConfirmacao('Excluir cliente?', 'Esse cliente será removido da lista.', () => setClientes(prev => prev.filter(c => c.id !== id)));
+  }
+  function removePedido(id) {
+    pedirConfirmacao('Excluir pedido?', 'Esse pedido será removido do histórico.', () => setPedidos(prev => prev.filter(p => p.id !== id)));
+  }
+  function removeGaleria(id) {
+    pedirConfirmacao('Excluir espaço?', 'Esse espaço e suas fotos serão removidos da galeria.', () => setGaleria(prev => prev.filter(item => item.id !== id)));
+  }
+
+  function removeFotoGaleria(galeriaId, fotoId) {
+    pedirConfirmacao('Excluir foto?', 'Essa foto será removida da galeria.', () => {
+      setGaleria(prev => prev.map(item => item.id === galeriaId
+        ? { ...item, fotos: item.fotos.filter(foto => foto.id !== fotoId) }
+        : item));
+    });
+  }
+
+  async function addFotoGaleria(galeriaId, file) {
     if (!file) return;
     if (!file.type.startsWith('image/')) {
       setGaleriaErro('Selecione um arquivo de imagem.');
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      setGaleriaErro('A imagem deve ter no máximo 5 MB.');
+    if (file.size > MAX_IMAGE_BYTES) {
+      setGaleriaErro('A imagem deve ter no máximo 8 MB.');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
+    try {
+      const src = await resizeImageFile(file);
+      const projected = JSON.stringify({ galeria: galeria.map(item => item.id === galeriaId ? { ...item, fotos: [...item.fotos, { src }] } : item) }).length;
+      if (projected > MAX_STORAGE_CHARS) {
+        setGaleriaErro('O armazenamento local está quase cheio. Exporte um backup antes de adicionar mais fotos.');
+        return;
+      }
       setGaleria(prev => prev.map(item => item.id === galeriaId
-        ? { ...item, fotos: [...item.fotos, { id: `${galeriaId}-${Date.now()}`, nome: file.name, src: reader.result }] }
+        ? { ...item, fotos: [...item.fotos, { id: `${galeriaId}-${Date.now()}`, nome: file.name, src }] }
         : item));
       setGaleriaErro('');
-    };
-    reader.onerror = () => setGaleriaErro('Não foi possível carregar essa imagem.');
-    reader.readAsDataURL(file);
+    } catch (error) {
+      setGaleriaErro(error?.message || 'Não foi possível carregar essa imagem.');
+    }
   }
 
   function marcarAdquirido(item) {
@@ -350,9 +602,132 @@ export default function App() {
     setSimPorTema(prev => ({ ...prev, [tema]: val }));
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    if (isSupabaseConfigured) {
+      await supabase.auth.signOut();
+    }
     setTab('catalogo');
     setEntrou(false);
+    setUsuario('');
+    setCurrentUserId('');
+  }
+
+  async function handleLogin(email, senha) {
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.toLowerCase(),
+        password: senha,
+      });
+      if (error) throw new Error(error.message || 'Não foi possível entrar.');
+      const user = data.user;
+      if (user) {
+        setCurrentUserId(user.id);
+        setUsuario(user.email || '');
+        setEntrou(true);
+      }
+      return;
+    }
+
+    const users = loadUsers();
+    if (users.length === 0) {
+      throw new Error('Nenhuma conta cadastrada ainda. Crie sua primeira conta.');
+    }
+    const senhaHash = await hashPassword(senha);
+    const user = users.find(item => item.email === email.toLowerCase() && item.senhaHash === senhaHash);
+    if (!user) throw new Error('E-mail ou senha inválidos.');
+    setUsuario(user.email);
+    setEntrou(true);
+  }
+
+  async function handleRegister(email, senha) {
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase.auth.signUp({
+        email: email.toLowerCase(),
+        password: senha,
+      });
+      if (error) throw new Error(error.message || 'Não foi possível criar a conta.');
+      if (data.user) {
+        setCurrentUserId(data.user.id);
+        setUsuario(data.user.email || '');
+        setEntrou(Boolean(data.session));
+        if (!data.session) {
+          throw new Error('Conta criada. Confirme seu e-mail antes de entrar.');
+        }
+      }
+      return;
+    }
+
+    const users = loadUsers();
+    const normalizedEmail = email.toLowerCase();
+    if (users.some(user => user.email === normalizedEmail)) {
+      throw new Error('Já existe uma conta com esse e-mail.');
+    }
+    const senhaHash = await hashPassword(senha);
+    saveUsers([...users, { email: normalizedEmail, senhaHash, createdAt: new Date().toISOString() }]);
+    setUsuario(normalizedEmail);
+    setEntrou(true);
+  }
+
+  async function handleRecover(email) {
+    if (isSupabaseConfigured) {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.toLowerCase());
+      if (error) throw new Error(error.message || 'Não foi possível enviar a recuperação.');
+      return 'Enviamos um e-mail de recuperação de senha.';
+    }
+
+    const exists = loadUsers().some(user => user.email === email.toLowerCase());
+    if (!exists) throw new Error('Não encontrei uma conta com esse e-mail.');
+    return 'Conta encontrada. Como este app é local, crie um backup e cadastre uma nova senha se precisar migrar.';
+  }
+
+  function buildBackupPayload() {
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      data: {
+        entrou,
+        usuario,
+        catalogo,
+        wishlist,
+        checklists,
+        pedidos,
+        clientes,
+        galeria,
+        nextId,
+      },
+    };
+  }
+
+  function exportBackup() {
+    downloadJson(`garagem-156a-backup-${new Date().toISOString().slice(0, 10)}.json`, buildBackupPayload());
+    setAppMensagem('Backup exportado.');
+  }
+
+  function importBackup(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        const data = parsed?.data || parsed;
+        if (!Array.isArray(data.catalogo) || !Array.isArray(data.wishlist) || !Array.isArray(data.checklists)) {
+          throw new Error('Arquivo de backup inválido.');
+        }
+        setCatalogo(data.catalogo);
+        setWishlist(data.wishlist);
+        setChecklists(data.checklists);
+        setPedidos(Array.isArray(data.pedidos) ? data.pedidos : []);
+        setClientes(Array.isArray(data.clientes) ? data.clientes : []);
+        setGaleria(normalizeGaleria(data.galeria));
+        setNextId(Number(data.nextId) || 200);
+        setUsuario(data.usuario || usuario);
+        setAppMensagem('Backup importado com sucesso.');
+      } catch (error) {
+        setAppMensagem(error?.message || 'Não foi possível importar o backup.');
+      }
+    };
+    reader.onerror = () => setAppMensagem('Não foi possível ler o arquivo.');
+    reader.readAsText(file);
   }
 
   const globalStyle = `
@@ -377,8 +752,17 @@ export default function App() {
     .bar-fill { height: 100%; transition: width .3s ease; }
   `;
 
+  if (authCarregando) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center" style={{ background: 'var(--bg)', color: 'var(--text)' }}>
+        <style>{globalStyle}</style>
+        <div className="plate text-base">Carregando garagem...</div>
+      </div>
+    );
+  }
+
   if (!entrou) {
-    return <Login onLogin={() => setEntrou(true)} globalStyle={globalStyle} />;
+    return <Login onLogin={handleLogin} onRegister={handleRegister} onRecover={handleRecover} authProvider={isSupabaseConfigured ? 'Supabase' : 'local'} globalStyle={globalStyle} />;
   }
 
   return (
@@ -410,7 +794,26 @@ export default function App() {
               </div>
             </div>
             </div>
-            <button type="button" onClick={handleLogout} aria-label="Sair da garagem" title="Sair da garagem" className="flex items-center gap-2 px-3 py-2 rounded border hair text-sm" style={{ color: 'var(--dim)' }}>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json"
+              className="hidden"
+              onChange={e => {
+                importBackup(e.target.files?.[0]);
+                e.target.value = '';
+              }}
+            />
+            <button type="button" onClick={exportBackup} className="px-3 py-2 rounded border hair text-sm" style={{ color: 'var(--dim)' }}>
+              Exportar
+            </button>
+            <button type="button" onClick={() => importInputRef.current?.click()} className="px-3 py-2 rounded border hair text-sm" style={{ color: 'var(--dim)' }}>
+              Importar
+            </button>
+            <span className="text-xs max-w-[180px] truncate" title={syncStatus} style={{ color: 'var(--dim)' }}>
+              {syncStatus}
+            </span>
+            <button type="button" onClick={handleLogout} aria-label="Sair da garagem" title={usuario ? `Sair de ${usuario}` : 'Sair da garagem'} className="flex items-center gap-2 px-3 py-2 rounded border hair text-sm" style={{ color: 'var(--dim)' }}>
               <LogOut size={15} />
               <span className="hidden sm:inline">Sair</span>
             </button>
@@ -429,6 +832,12 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8 fade-in" key={tab}>
+        {appMensagem && (
+          <div className="border hair rounded px-3 py-2 mb-4 text-sm flex items-center justify-between gap-3" style={{ background: 'var(--panel)', color: 'var(--text)' }}>
+            <span>{appMensagem}</span>
+            <button type="button" onClick={() => setAppMensagem('')} className="p-1 rounded hover:bg-white/5" aria-label="Fechar aviso"><X size={14} /></button>
+          </div>
+        )}
 
         {tab === 'catalogo' && (
           <div>
@@ -522,14 +931,18 @@ export default function App() {
 
         {tab === 'wishlist' && (
           <div>
-            <div className="flex justify-end mb-4">
+            <div className="flex flex-wrap gap-3 justify-between mb-4">
+              <div className="flex items-center gap-2 border hair rounded px-3 py-2 flex-1 min-w-[220px]" style={{ background: 'var(--panel)' }}>
+                <Search size={16} style={{ color: 'var(--dim)' }} />
+                <input value={wishlistBusca} onChange={e => setWishlistBusca(e.target.value)} placeholder="Buscar por marca, modelo, tema ou prioridade..." className="bg-transparent outline-none text-sm flex-1" />
+              </div>
               <button onClick={() => openAdd('wishlist')} className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium" style={{ background: 'var(--teal)', color: '#F2ECDD' }}>
                 <Plus size={16} /> Adicionar à wishlist
               </button>
             </div>
             <div className="space-y-2">
-              {wishlist.length === 0 && <div className="p-8 text-center text-sm border hair rounded" style={{ color: 'var(--dim)', background: 'var(--panel)' }}>Sua wishlist está vazia.</div>}
-              {wishlist.map(item => (
+              {wishlistFiltrada.length === 0 && <div className="p-8 text-center text-sm border hair rounded" style={{ color: 'var(--dim)', background: 'var(--panel)' }}>Nenhum item encontrado na wishlist.</div>}
+              {wishlistFiltrada.map(item => (
                 <div key={item.id} className="flex items-center gap-4 px-4 py-3 border-l-4 rounded" style={{ background: 'var(--panel)', borderLeftColor: 'var(--teal)', borderTop: '1px solid var(--border)', borderRight: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold text-sm">{item.marca} — {item.modelo}</div>
@@ -660,22 +1073,26 @@ export default function App() {
 
         {tab === 'pedidos' && (
           <div>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
               <div className="flex items-center gap-2">
                 <Package size={18} style={{ color: 'var(--pink)' }} />
                 <h2 className="plate text-base">Pedidos — trocas e vendas</h2>
+              </div>
+              <div className="flex items-center gap-2 border hair rounded px-3 py-2 flex-1 min-w-[220px] max-w-md" style={{ background: 'var(--panel)' }}>
+                <Search size={16} style={{ color: 'var(--dim)' }} />
+                <input value={pedidoBusca} onChange={e => setPedidoBusca(e.target.value)} placeholder="Buscar pedidos..." className="bg-transparent outline-none text-sm flex-1" />
               </div>
               <button onClick={() => openAdd('pedido')} className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium" style={{ background: 'var(--pink)', color: ON_PINK }}>
                 <Plus size={16} /> Adicionar pedido
               </button>
             </div>
-            <div className="border hair rounded overflow-hidden" style={{ background: 'var(--panel)' }}>
-              <div className="grid grid-cols-[80px_1fr_140px_90px_150px_100px_60px] gap-3 px-4 py-2 text-xs uppercase tracking-wider" style={{ color: 'var(--dim)', background: 'var(--panel-alt)' }}>
+            <div className="border hair rounded overflow-x-auto" style={{ background: 'var(--panel)' }}>
+              <div className="grid grid-cols-[80px_1fr_140px_90px_150px_100px_60px] min-w-[780px] gap-3 px-4 py-2 text-xs uppercase tracking-wider" style={{ color: 'var(--dim)', background: 'var(--panel-alt)' }}>
                 <span>Tipo</span><span>Peça</span><span>Contraparte</span><span>Valor</span><span>Status</span><span>Data</span><span></span>
               </div>
-              {pedidos.length === 0 && <div className="p-8 text-center text-sm" style={{ color: 'var(--dim)' }}>Nenhum pedido registrado.</div>}
-              {pedidos.map((p, idx) => (
-                <div key={p.id} className="grid grid-cols-[80px_1fr_140px_90px_150px_100px_60px] gap-3 px-4 py-3 text-sm border-t hair items-center group" style={{ borderTopWidth: idx === 0 ? 0 : 1 }}>
+              {pedidosFiltrados.length === 0 && <div className="p-8 text-center text-sm" style={{ color: 'var(--dim)' }}>Nenhum pedido encontrado.</div>}
+              {pedidosFiltrados.map((p, idx) => (
+                <div key={p.id} className="grid grid-cols-[80px_1fr_140px_90px_150px_100px_60px] min-w-[780px] gap-3 px-4 py-3 text-sm border-t hair items-center group" style={{ borderTopWidth: idx === 0 ? 0 : 1 }}>
                   <span style={{ color: 'var(--dim)' }}>{p.tipo}</span>
                   <span className="truncate">{p.peca}</span>
                   <span className="truncate">{p.contraparte}</span>
@@ -694,16 +1111,20 @@ export default function App() {
 
         {tab === 'clientes' && (
           <div>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
               <div className="flex items-center gap-2">
                 <Users size={18} style={{ color: 'var(--pink)' }} />
                 <h2 className="plate text-base">Clientes — assinantes</h2>
+              </div>
+              <div className="flex items-center gap-2 border hair rounded px-3 py-2 flex-1 min-w-[220px] max-w-md" style={{ background: 'var(--panel)' }}>
+                <Search size={16} style={{ color: 'var(--dim)' }} />
+                <input value={clienteBusca} onChange={e => setClienteBusca(e.target.value)} placeholder="Buscar clientes..." className="bg-transparent outline-none text-sm flex-1" />
               </div>
               <button onClick={() => openAdd('cliente')} className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium" style={{ background: 'var(--pink)', color: ON_PINK }}>
                 <Plus size={16} /> Adicionar cliente
               </button>
             </div>
-            <div className="grid grid-cols-4 gap-4 mb-5">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
               {[
                 ['Total', clientesStats.total],
                 ['Ativos', clientesStats.ativos],
@@ -716,12 +1137,13 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div className="border hair rounded overflow-hidden" style={{ background: 'var(--panel)' }}>
-              <div className="grid grid-cols-[1fr_1fr_90px_130px_110px_90px_70px] gap-3 px-4 py-2 text-xs uppercase tracking-wider" style={{ color: 'var(--dim)', background: 'var(--panel-alt)' }}>
+            <div className="border hair rounded overflow-x-auto" style={{ background: 'var(--panel)' }}>
+              <div className="grid grid-cols-[1fr_1fr_90px_130px_110px_90px_70px] min-w-[820px] gap-3 px-4 py-2 text-xs uppercase tracking-wider" style={{ color: 'var(--dim)', background: 'var(--panel-alt)' }}>
                 <span>Nome</span><span>E-mail</span><span>Plano</span><span>Status</span><span>Início</span><span>Valor</span><span></span>
               </div>
-              {clientes.map((c, idx) => (
-                <div key={c.id} className="grid grid-cols-[1fr_1fr_90px_130px_110px_90px_70px] gap-3 px-4 py-3 text-sm border-t hair items-center group" style={{ borderTopWidth: idx === 0 ? 0 : 1 }}>
+              {clientesFiltrados.length === 0 && <div className="p-8 text-center text-sm" style={{ color: 'var(--dim)' }}>Nenhum cliente encontrado.</div>}
+              {clientesFiltrados.map((c, idx) => (
+                <div key={c.id} className="grid grid-cols-[1fr_1fr_90px_130px_110px_90px_70px] min-w-[820px] gap-3 px-4 py-3 text-sm border-t hair items-center group" style={{ borderTopWidth: idx === 0 ? 0 : 1 }}>
                   <span className="truncate font-medium">{c.nome}</span>
                   <span className="truncate" style={{ color: 'var(--dim)' }}>{c.email}</span>
                   <span>{c.plano}</span>
@@ -740,10 +1162,14 @@ export default function App() {
 
         {tab === 'galeria' && (
           <div>
-            <div className="flex items-center justify-between gap-3 mb-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
               <div>
                 <h2 className="plate text-base">Galeria da garagem</h2>
                 <p className="text-sm mt-1" style={{ color: 'var(--dim)' }}>Adicione fotos de cada vitrine, estante ou espaço.</p>
+              </div>
+              <div className="flex items-center gap-2 border hair rounded px-3 py-2 flex-1 min-w-[220px] max-w-md" style={{ background: 'var(--panel)' }}>
+                <Search size={16} style={{ color: 'var(--dim)' }} />
+                <input value={galeriaBusca} onChange={e => setGaleriaBusca(e.target.value)} placeholder="Buscar espaços..." className="bg-transparent outline-none text-sm flex-1" />
               </div>
               <button onClick={() => openAdd('galeria')} className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium shrink-0" style={{ background: 'var(--pink)', color: ON_PINK }}>
                 <Plus size={16} /> Adicionar espaço
@@ -751,7 +1177,8 @@ export default function App() {
             </div>
             {galeriaErro && <div className="border hair rounded px-3 py-2 mb-4 text-sm" style={{ color: 'var(--down)', background: 'var(--panel)' }}>{galeriaErro}</div>}
             <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4">
-              {galeria.map(g => (
+              {galeriaFiltrada.length === 0 && <div className="sm:col-span-2 md:col-span-3 p-8 text-center text-sm border hair rounded" style={{ color: 'var(--dim)', background: 'var(--panel)' }}>Nenhum espaço encontrado.</div>}
+              {galeriaFiltrada.map(g => (
                 <div key={g.id} className="border hair rounded overflow-hidden" style={{ background: 'var(--panel)' }}>
                   <div className="h-40 grid grid-cols-2 gap-1" style={{ background: `linear-gradient(135deg, ${liveryFor(g.titulo)}33, ${liveryFor(g.local)}22)` }}>
                     {g.fotos.length > 0 ? g.fotos.slice(0, 4).map(foto => (
@@ -864,6 +1291,19 @@ export default function App() {
               <button type="submit" className="px-4 py-2 text-sm rounded font-medium" style={{ background: 'var(--pink)', color: ON_PINK }}>Salvar</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {confirmacao && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.68)' }}>
+          <div className="w-full max-w-sm border hair rounded p-5" style={{ background: 'var(--panel)' }}>
+            <h3 className="plate text-base mb-2">{confirmacao.titulo}</h3>
+            <p className="text-sm mb-5" style={{ color: 'var(--dim)' }}>{confirmacao.texto}</p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmacao(null)} className="px-4 py-2 text-sm rounded" style={{ color: 'var(--dim)' }}>Cancelar</button>
+              <button type="button" onClick={confirmarAcao} className="px-4 py-2 text-sm rounded font-medium" style={{ background: 'var(--down)', color: '#fff' }}>Excluir</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
