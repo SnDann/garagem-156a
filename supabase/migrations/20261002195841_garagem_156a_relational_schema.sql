@@ -1,3 +1,8 @@
+-- Supersedes the earlier single-JSONB-blob architecture (garagem_states).
+-- This migration drops that table and introduces the normalized,
+-- per-entity schema used by the current App.jsx.
+drop table if exists public.garagem_states cascade;
+
 -- Garagem 156A — Schema Supabase
 -- Execute este arquivo inteiro no SQL Editor do seu projeto Supabase
 -- (Dashboard → SQL Editor → New query → cole tudo → Run).
